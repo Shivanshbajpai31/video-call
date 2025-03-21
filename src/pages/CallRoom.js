@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import io from 'socket.io-client';
 import Peer from 'simple-peer';
 import {
@@ -21,6 +21,7 @@ import {
   DialogActions,
   Fab,
   Collapse,
+  Snackbar,
 } from '@mui/material';
 import {
   CallEnd,
@@ -28,10 +29,9 @@ import {
   MicOff,
   Videocam,
   VideocamOff,
-  ScreenShare,
-  AttachFile,
   Call,
   Chat as ChatIcon,
+  AttachFile,
 } from '@mui/icons-material';
 import { styled } from '@mui/system';
 
@@ -63,8 +63,7 @@ const MessageList = styled(List)({
 });
 
 const CallRoom = () => {
-  const { roomId } = useParams();
-  const navigate = useNavigate();
+  const { roomId: initialRoomId } = useParams(); // Get roomId from URL (if any)
   const [stream, setStream] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
@@ -74,6 +73,10 @@ const CallRoom = () => {
   const [showCallTypeDialog, setShowCallTypeDialog] = useState(false);
   const [isCallActive, setIsCallActive] = useState(false);
   const [isChatMinimized, setIsChatMinimized] = useState(false);
+  const [callRequest, setCallRequest] = useState(null);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [roomId, setRoomId] = useState(initialRoomId || ''); // Room ID state
   const userVideoRef = useRef();
   const peerVideoRef = useRef();
   const peerRef = useRef();
@@ -86,12 +89,7 @@ const CallRoom = () => {
         stream,
         config: {
           iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            {
-              urls: 'turn:your-turn-server.com',
-              username: 'your-username',
-              credential: 'your-credential',
-            },
+            { urls: 'stun:stun.l.google.com:19302' }, // STUN server
           ],
         },
       });
@@ -111,6 +109,34 @@ const CallRoom = () => {
     [stream, roomId]
   );
 
+  const handleCallTypeSelection = useCallback((isNormal) => {
+    setIsNormalCall(isNormal);
+    setShowCallTypeDialog(false);
+    setIsCallActive(true);
+    setIsChatMinimized(true); // Minimize chat section when call starts
+
+    const mediaConstraints = isNormal
+      ? { audio: true, video: false } // Audio-only for normal call
+      : { audio: true, video: true }; // Video call
+
+    navigator.mediaDevices.getUserMedia(mediaConstraints).then((stream) => {
+      setStream(stream);
+      if (userVideoRef.current) {
+        userVideoRef.current.srcObject = stream;
+      }
+    });
+
+    socket.emit('join-room', roomId); // Join the room
+
+    socket.on('signal', (data) => {
+      if (!peerRef.current) {
+        createPeer(data);
+      } else {
+        peerRef.current.signal(data);
+      }
+    });
+  }, [createPeer, roomId]);
+
   useEffect(() => {
     socket.on('receive-message', (data) => {
       if (data && (data.message || data.media)) {
@@ -120,47 +146,47 @@ const CallRoom = () => {
       }
     });
 
+    socket.on('receive-call-request', (data) => {
+      setCallRequest(data);
+      setSnackbarMessage(`Incoming call from ${data.from}`);
+      setSnackbarOpen(true);
+    });
+
+    socket.on('call-request-accepted', (data) => {
+      setSnackbarMessage('Call request accepted');
+      setSnackbarOpen(true);
+      handleCallTypeSelection(false); // Start video call by default
+    });
+
+    socket.on('call-request-rejected', () => {
+      setSnackbarMessage('Call request rejected');
+      setSnackbarOpen(true);
+      setCallRequest(null);
+    });
+
     return () => {
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
       socket.disconnect();
     };
-  }, [stream]);
+  }, [stream, handleCallTypeSelection]);
 
   const startCall = () => {
+    if (!roomId) {
+      alert('Please enter a Room ID');
+      return;
+    }
     setShowCallTypeDialog(true);
   };
 
-  const handleCallTypeSelection = (isNormal) => {
-    setIsNormalCall(isNormal);
-    setShowCallTypeDialog(false);
+  const joinRoom = () => {
+    if (!roomId) {
+      alert('Please enter a Room ID');
+      return;
+    }
+    socket.emit('join-room', roomId); // Join the room
     setIsCallActive(true);
-    setIsChatMinimized(true);
-
-    const mediaConstraints = isNormal
-      ? { audio: true, video: false }
-      : {
-          audio: true,
-          video: { width: 320, height: 240, frameRate: 10 },
-        };
-
-    navigator.mediaDevices.getUserMedia(mediaConstraints).then((stream) => {
-      setStream(stream);
-      if (userVideoRef.current) {
-        userVideoRef.current.srcObject = stream;
-      }
-    });
-
-    socket.emit('join-room', roomId);
-
-    socket.on('signal', (data) => {
-      if (!peerRef.current) {
-        createPeer(data);
-      } else {
-        peerRef.current.signal(data);
-      }
-    });
   };
 
   const sendMessage = () => {
@@ -206,7 +232,7 @@ const CallRoom = () => {
       peerRef.current.destroy();
     }
     setIsCallActive(false);
-    setIsChatMinimized(false);
+    setIsChatMinimized(false); // Restore chat section when call ends
   };
 
   const toggleMute = () => {
@@ -227,27 +253,23 @@ const CallRoom = () => {
     }
   };
 
-  const shareScreen = () => {
-    navigator.mediaDevices.getDisplayMedia({ video: true }).then((screenStream) => {
-      if (peerRef.current) {
-        peerRef.current.replaceTrack(
-          stream.getVideoTracks()[0],
-          screenStream.getVideoTracks()[0],
-          stream
-        );
-        screenStream.getTracks()[0].onended = () => {
-          peerRef.current.replaceTrack(
-            screenStream.getVideoTracks()[0],
-            stream.getVideoTracks()[0],
-            stream
-          );
-        };
-      }
-    });
-  };
-
   const toggleChat = () => {
     setIsChatMinimized(!isChatMinimized);
+  };
+
+  const handleSnackbarClose = () => {
+    setSnackbarOpen(false);
+  };
+
+  // Add missing functions
+  const acceptCallRequest = () => {
+    socket.emit('accept-call-request', { to: callRequest.from, roomId });
+    setCallRequest(null);
+  };
+
+  const rejectCallRequest = () => {
+    socket.emit('reject-call-request', { to: callRequest.from });
+    setCallRequest(null);
   };
 
   return (
@@ -370,11 +392,6 @@ const CallRoom = () => {
               {isVideoOn ? <Videocam /> : <VideocamOff />}
             </IconButton>
           )}
-          {!isNormalCall && (
-            <IconButton color="primary" onClick={shareScreen}>
-              <ScreenShare />
-            </IconButton>
-          )}
           <IconButton color="secondary" onClick={endCall}>
             <CallEnd />
           </IconButton>
@@ -383,6 +400,25 @@ const CallRoom = () => {
           </IconButton>
         </Box>
       )}
+
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={6000}
+        onClose={handleSnackbarClose}
+        message={snackbarMessage}
+        action={
+          callRequest && (
+            <>
+              <Button color="secondary" size="small" onClick={acceptCallRequest}>
+                Accept
+              </Button>
+              <Button color="secondary" size="small" onClick={rejectCallRequest}>
+                Reject
+              </Button>
+            </>
+          )
+        }
+      />
     </Container>
   );
 };
