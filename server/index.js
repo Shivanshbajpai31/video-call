@@ -9,7 +9,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:3000', // Allow your React app to connect
+    origin: 'https://your-frontend-url.vercel.app', // Update this to your deployed frontend URL
     methods: ['GET', 'POST'],
   },
 });
