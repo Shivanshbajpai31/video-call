@@ -35,7 +35,7 @@ import {
 } from '@mui/icons-material';
 import { styled } from '@mui/system';
 
-const socket = io('http://localhost:5889'); // Connect to your backend server
+const socket = io('https://video-call-2-xl8w.onrender.com'); // Connect to your backend server
 
 const VideoContainer = styled(Box)({
   position: 'fixed',
